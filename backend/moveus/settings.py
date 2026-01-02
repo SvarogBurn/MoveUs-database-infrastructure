@@ -41,6 +41,8 @@ INSTALLED_APPS = [
     'users.apps.UsersConfig',
     'activities.apps.ActivitiesConfig',
     'events.apps.EventsConfig',
+    'locations.apps.LocationsConfig',
+
 ]
 
 MIDDLEWARE = [
