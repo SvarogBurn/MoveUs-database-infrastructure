@@ -1,24 +1,32 @@
+# users/models.py
 import datetime
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 
-
 class User(AbstractUser):
-    """
-    Minimalni MoveUs user za Phase 1.
-    """
-    username = models.CharField(max_length=32, unique=True)
     email = models.EmailField(unique=True)
+    username = models.CharField(max_length=32, unique=True)
+
+    first_name = models.CharField(max_length=30)
+    last_name = models.CharField(max_length=30)
 
     date_of_birth = models.DateField(null=True, blank=True)
 
-    USERNAME_FIELD = "email"
-    REQUIRED_FIELDS = ["username"]
+    GENDER_CHOICES = [
+        ("M", "Male"),
+        ("F", "Female"),
+        ("O", "Other"),
+    ]
+    gender = models.CharField(max_length=1, choices=GENDER_CHOICES, null=True, blank=True)
 
-    def save(self, *args, **kwargs):
-        if self.username:
-            self.username = self.username.lower()
-        super().save(*args, **kwargs)
+    preferred_activities = models.ManyToManyField(
+        "activities.Activity",
+        blank=True,
+        related_name="preferred_by_users"
+    )
+
+    USERNAME_FIELD = "username"
+    REQUIRED_FIELDS = ["email"]
 
     @property
     def age(self):
