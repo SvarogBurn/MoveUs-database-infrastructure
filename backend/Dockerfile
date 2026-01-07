@@ -8,7 +8,9 @@ RUN apt-get update \
 
 RUN pip install --no-cache-dir \
     Django>=4.2 \
-    psycopg2-binary>=2.9
+    psycopg2-binary>=2.9 \
+    django-extensions
+
 
 COPY . .
 
