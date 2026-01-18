@@ -1,20 +1,104 @@
 services:
-  db:
+  # Primary PostgreSQL Database
+  db-primary:
     image: postgres:15
     environment:
       POSTGRES_DB: moveus_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres123
+    command: |
+      postgres
+      -c wal_level=replica
+      -c hot_standby=on
+      -c max_wal_senders=10
+      -c max_replication_slots=10
+      -c hot_standby_feedback=on
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_primary_data:/var/lib/postgresql/data
+      - ./init-primary.sh:/docker-entrypoint-initdb.d/init-primary.sh
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - moveus-network
 
+  # Replica 1
+  db-replica1:
+    image: postgres:15
+    user: postgres
+    environment:
+      POSTGRES_DB: moveus_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+      PGPASSWORD: replicator123
+    command: |
+      bash -c "
+      until PGPASSWORD=replicator123 pg_basebackup --pgdata=/var/lib/postgresql/data -R --slot=replication_slot_1 --host=db-primary --port=5432 --username=replicator; do
+        echo 'Waiting for primary to be ready...'
+        sleep 2
+      done
+      chmod 0700 /var/lib/postgresql/data
+      postgres
+      "
+    depends_on:
+      db-primary:
+        condition: service_healthy
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_replica1_data:/var/lib/postgresql/data
+    networks:
+      - moveus-network
+
+  # Replica 2
+  db-replica2:
+    image: postgres:15
+    user: postgres
+    environment:
+      POSTGRES_DB: moveus_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+      PGPASSWORD: replicator123
+    command: |
+      bash -c "
+      until PGPASSWORD=replicator123 pg_basebackup --pgdata=/var/lib/postgresql/data -R --slot=replication_slot_2 --host=db-primary --port=5432 --username=replicator; do
+        echo 'Waiting for primary to be ready...'
+        sleep 2
+      done
+      chmod 0700 /var/lib/postgresql/data
+      postgres
+      "
+    depends_on:
+      db-primary:
+        condition: service_healthy
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_replica2_data:/var/lib/postgresql/data
+    networks:
+      - moveus-network
+
+  # HAProxy Load Balancer
+  haproxy:
+    image: haproxy:2.8
+    ports:
+      - "5000:5000"  # Load balanced read port
+      - "5001:5001"  # Direct write port (primary only)
+      - "8404:8404"  # HAProxy stats page
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      - db-primary
+      - db-replica1
+      - db-replica2
+    networks:
+      - moveus-network
+
+  # Django Web Application
   web:
     build: .
     command: python manage.py runserver 0.0.0.0:8000
@@ -23,15 +107,25 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      db:
+      db-primary:
         condition: service_healthy
+      haproxy:
+        condition: service_started
     environment:
       POSTGRES_DB: moveus_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres123
-      POSTGRES_HOST: db
-      POSTGRES_PORT: 5432
+      POSTGRES_HOST: haproxy
+      POSTGRES_PORT: 5001
       DJANGO_SETTINGS_MODULE: moveus.settings
+    networks:
+      - moveus-network
 
 volumes:
-  postgres_data:
+  postgres_primary_data:
+  postgres_replica1_data:
+  postgres_replica2_data:
+
+networks:
+  moveus-network:
+    driver: bridge
