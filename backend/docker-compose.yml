@@ -1,11 +1,13 @@
 services:
-  # Primary PostgreSQL Database
+  # Primary PostgreSQL Database with PostGIS
   db-primary:
-    image: postgres:15
+    image: postgis/postgis:15-3.3
     environment:
       POSTGRES_DB: moveus_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres123
+      POSTGRES_REPLICATION_USER: replicator
+      POSTGRES_REPLICATION_PASSWORD: replicator123
     command: |
       postgres
       -c wal_level=replica
@@ -13,6 +15,14 @@ services:
       -c max_wal_senders=10
       -c max_replication_slots=10
       -c hot_standby_feedback=on
+      -c shared_buffers=256MB
+      -c effective_cache_size=1GB
+      -c maintenance_work_mem=64MB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=16MB
+      -c default_statistics_target=100
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
     ports:
       - "5432:5432"
     volumes:
@@ -28,7 +38,7 @@ services:
 
   # Replica 1
   db-replica1:
-    image: postgres:15
+    image: postgis/postgis:15-3.3
     user: postgres
     environment:
       POSTGRES_DB: moveus_db
@@ -51,12 +61,17 @@ services:
       - "5433:5432"
     volumes:
       - postgres_replica1_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - moveus-network
 
   # Replica 2
   db-replica2:
-    image: postgres:15
+    image: postgis/postgis:15-3.3
     user: postgres
     environment:
       POSTGRES_DB: moveus_db
@@ -79,15 +94,18 @@ services:
       - "5434:5432"
     volumes:
       - postgres_replica2_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - moveus-network
 
-  # HAProxy Load Balancer
+  # HAProxy Load Balancer (kept for monitoring)
   haproxy:
     image: haproxy:2.8
     ports:
-      - "5000:5000"  # Load balanced read port
-      - "5001:5001"  # Direct write port (primary only)
       - "8404:8404"  # HAProxy stats page
     volumes:
       - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
@@ -98,26 +116,151 @@ services:
     networks:
       - moveus-network
 
+  # Redis for caching and real-time location
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - moveus-network
+
   # Django Web Application
   web:
     build: .
-    command: python manage.py runserver 0.0.0.0:8000
+    command: gunicorn moveus.wsgi:application --bind 0.0.0.0:8000 --workers 4 --timeout 60 --access-logfile - --error-logfile -
     volumes:
       - .:/app
+      - static_volume:/app/staticfiles
     ports:
       - "8000:8000"
     depends_on:
       db-primary:
         condition: service_healthy
-      haproxy:
-        condition: service_started
+      redis:
+        condition: service_healthy
     environment:
       POSTGRES_DB: moveus_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres123
-      POSTGRES_HOST: haproxy
-      POSTGRES_PORT: 5001
+      DB_PRIMARY_HOST: db-primary
+      DB_PRIMARY_PORT: 5432
+      DB_REPLICA1_HOST: db-replica1
+      DB_REPLICA1_PORT: 5432
+      DB_REPLICA2_HOST: db-replica2
+      DB_REPLICA2_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      CELERY_BROKER_URL: redis://redis:6379/0
       DJANGO_SETTINGS_MODULE: moveus.settings
+    networks:
+      - moveus-network
+
+  # Celery Worker for async tasks
+  celery-worker:
+    build: .
+    command: celery -A moveus worker --loglevel=info --concurrency=4
+    volumes:
+      - .:/app
+    depends_on:
+      - redis
+      - db-primary
+    environment:
+      POSTGRES_DB: moveus_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+      DB_PRIMARY_HOST: db-primary
+      DB_PRIMARY_PORT: 5432
+      DB_REPLICA1_HOST: db-replica1
+      DB_REPLICA1_PORT: 5432
+      DB_REPLICA2_HOST: db-replica2
+      DB_REPLICA2_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      CELERY_BROKER_URL: redis://redis:6379/0
+      DJANGO_SETTINGS_MODULE: moveus.settings
+    networks:
+      - moveus-network
+
+  # Celery Beat for scheduled tasks
+  celery-beat:
+    build: .
+    command: celery -A moveus beat --loglevel=info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    volumes:
+      - .:/app
+    depends_on:
+      - redis
+      - db-primary
+    environment:
+      POSTGRES_DB: moveus_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+      DB_PRIMARY_HOST: db-primary
+      DB_PRIMARY_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      CELERY_BROKER_URL: redis://redis:6379/0
+      DJANGO_SETTINGS_MODULE: moveus.settings
+    networks:
+      - moveus-network
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    networks:
+      - moveus-network
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+      - GF_INSTALL_PLUGINS=redis-datasource
+    networks:
+      - moveus-network
+
+  # Redis Exporter for Prometheus
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    command: --redis.addr=redis:6379
+    ports:
+      - "9121:9121"
+    depends_on:
+      - redis
+    networks:
+      - moveus-network
+
+  # PostgreSQL Exporter for Prometheus
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    environment:
+      DATA_SOURCE_NAME: "postgresql://postgres:postgres123@db-primary:5432/moveus_db?sslmode=disable"
+    ports:
+      - "9187:9187"
+    depends_on:
+      - db-primary
     networks:
       - moveus-network
 
@@ -125,6 +268,10 @@ volumes:
   postgres_primary_data:
   postgres_replica1_data:
   postgres_replica2_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+  static_volume:
 
 networks:
   moveus-network:

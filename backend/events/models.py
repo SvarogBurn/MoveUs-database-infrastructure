@@ -1,3 +1,4 @@
+from django.contrib.gis.db import models as gis_models
 from django.db import models
 from django.core.validators import MinValueValidator, MaxValueValidator
 from core.enums import Gender, ActivityProficiency, EventRating, InteractionType
@@ -8,7 +9,7 @@ from activities.models import Activity
 
 class Event(models.Model):
     """
-    Represents a fitness/activity event that users can create and join.
+    Represents a fitness/activity event with spatial support
     """
     title = models.CharField(max_length=200)
     description = models.TextField()
@@ -29,18 +30,11 @@ class Event(models.Model):
         blank=True,
         related_name="events"
     )
-    latitude = models.DecimalField(
-        max_digits=9,
-        decimal_places=6,
-        null=True,
-        blank=True
-    )
-    longitude = models.DecimalField(
-        max_digits=9,
-        decimal_places=6,
-        null=True,
-        blank=True
-    )
+    
+    # PostGIS PointField replaces latitude/longitude
+    # This enables spatial indexing and efficient distance queries
+    location_point = gis_models.PointField(geography=True, srid=4326)
+    
     address = models.CharField(max_length=300, blank=True)
 
     # Related activity
@@ -57,6 +51,19 @@ class Event(models.Model):
         verbose_name = "Event"
         verbose_name_plural = "Events"
         ordering = ["-start_datetime"]
+        indexes = [
+            # Spatial index for "events near me" queries
+            gis_models.Index(fields=['location_point']),
+            
+            # Composite index for "upcoming events for an activity"
+            models.Index(fields=['activity', 'start_datetime']),
+            
+            # Index for user's created events
+            models.Index(fields=['created_by', '-created_at']),
+            
+            # Index for upcoming events
+            models.Index(fields=['start_datetime']),
+        ]
 
     def __str__(self):
         return f"{self.title} - {self.start_datetime.strftime('%Y-%m-%d %H:%M')}"
@@ -64,7 +71,7 @@ class Event(models.Model):
 
 class EventRequirements(models.Model):
     """
-    Defines requirements for event participation (gender, age, proficiency).
+    Defines requirements for event participation
     """
     event = models.OneToOneField(
         Event,
@@ -110,7 +117,7 @@ class EventRequirements(models.Model):
 
 class EventParticipation(models.Model):
     """
-    Tracks user participation in events with optional rating and feedback.
+    Tracks user participation in events with rating and feedback
     """
     user = models.ForeignKey(
         User,
@@ -144,6 +151,13 @@ class EventParticipation(models.Model):
         verbose_name_plural = "Event Participations"
         unique_together = [["user", "event"]]
         ordering = ["-joined_at"]
+        indexes = [
+            # Find all participations for a user
+            models.Index(fields=['user', '-joined_at']),
+            
+            # Find all participants for an event
+            models.Index(fields=['event', 'joined_at']),
+        ]
 
     def __str__(self):
         return f"{self.user.username} - {self.event.title}"
@@ -151,8 +165,7 @@ class EventParticipation(models.Model):
 
 class UserInteraction(models.Model):
     """
-    Tracks user-to-user interactions during events.
-    Defaults to NEUTRAL if no feedback is provided.
+    Tracks user-to-user interactions during events
     """
     from_user = models.ForeignKey(
         User,
@@ -173,7 +186,7 @@ class UserInteraction(models.Model):
         max_length=7,
         choices=InteractionType.choices,
         default=InteractionType.NEUTRAL,
-        help_text="Like/Neutral/Dislike - defaults to Neutral if not specified"
+        help_text="Like/Neutral/Dislike"
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -183,6 +196,11 @@ class UserInteraction(models.Model):
         verbose_name_plural = "User Interactions"
         unique_together = [["from_user", "to_user", "event"]]
         ordering = ["-created_at"]
+        indexes = [
+            # Query interactions by user
+            models.Index(fields=['from_user', '-created_at']),
+            models.Index(fields=['to_user', '-created_at']),
+        ]
 
     def __str__(self):
         return f"{self.from_user.username} → {self.to_user.username} ({self.get_interaction_value_display()}) @ {self.event.title}"

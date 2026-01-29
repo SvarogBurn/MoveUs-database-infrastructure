@@ -8,8 +8,8 @@ from activities.models import Activity
 
 class User(AbstractUser):
     """
-    Custom user model extending Django's AbstractUser.
-    Includes additional fields for fitness/activity preferences.
+    Custom user model extending Django's AbstractUser
+    Includes additional fields for fitness/activity preferences
     """
     date_of_birth = models.DateField(null=True, blank=True)
     gender = models.CharField(
@@ -46,39 +46,24 @@ class User(AbstractUser):
         db_table = "user"
         verbose_name = "User"
         verbose_name_plural = "Users"
+        indexes = [
+            models.Index(fields=['home_city']),
+        ]
 
     def __str__(self):
         return self.username
 
 
-class UserLocation(models.Model):
-    """
-    Tracks real-time user location when location tracking is enabled.
-    Weak entity dependent on User.
-    """
-    user = models.OneToOneField(
-        User,
-        on_delete=models.CASCADE,
-        primary_key=True,
-        related_name="current_location"
-    )
-    latitude = models.DecimalField(max_digits=9, decimal_places=6)
-    longitude = models.DecimalField(max_digits=9, decimal_places=6)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        db_table = "user_location"
-        verbose_name = "User Location"
-        verbose_name_plural = "User Locations"
-
-    def __str__(self):
-        return f"{self.user.username} - ({self.latitude}, {self.longitude})"
+# REMOVED: UserLocation model
+# User real-time location is now stored in Redis instead of PostgreSQL
+# This is more efficient for high-frequency updates and doesn't fill up the database
+# See utils/location_cache.py for Redis-based location tracking
 
 
 class PsychologicalProfile(models.Model):
     """
-    Stores OCEAN (Big Five) personality traits for each user.
-    All traits are normalized between 0 and 1.
+    Stores OCEAN (Big Five) personality traits for each user
+    All traits are normalized between 0 and 1
     """
     user = models.OneToOneField(
         User,
@@ -118,8 +103,8 @@ class PsychologicalProfile(models.Model):
 
 class UserActivityProficiency(models.Model):
     """
-    Tracks user's proficiency level for different activities.
-    Many-to-many relationship between User and Activity with proficiency level.
+    Tracks user's proficiency level for different activities
+    Many-to-many relationship between User and Activity with proficiency level
     """
     user = models.ForeignKey(
         User,
@@ -142,6 +127,9 @@ class UserActivityProficiency(models.Model):
         verbose_name = "User Activity Proficiency"
         verbose_name_plural = "User Activity Proficiencies"
         unique_together = [["user", "activity"]]
+        indexes = [
+            models.Index(fields=['user', 'activity']),
+        ]
 
     def __str__(self):
         return f"{self.user.username} - {self.activity.name} ({self.get_proficiency_level_display()})"

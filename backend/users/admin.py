@@ -1,12 +1,5 @@
 from django.contrib import admin
-from .models import User, UserLocation, PsychologicalProfile, UserActivityProficiency
-
-
-class UserLocationInline(admin.StackedInline):
-    model = UserLocation
-    can_delete = False
-    verbose_name_plural = "Current Location"
-    extra = 0
+from .models import User, PsychologicalProfile, UserActivityProficiency
 
 
 class PsychologicalProfileInline(admin.StackedInline):
@@ -25,7 +18,7 @@ class UserActivityProficiencyInline(admin.TabularInline):
 
 @admin.register(User)
 class UserAdmin(admin.ModelAdmin):
-    inlines = [UserLocationInline, PsychologicalProfileInline, UserActivityProficiencyInline]
+    inlines = [PsychologicalProfileInline, UserActivityProficiencyInline]
     
     list_display = [
         "username",
@@ -75,12 +68,6 @@ class UserAdmin(admin.ModelAdmin):
         }),
     )
 
-
-@admin.register(UserLocation)
-class UserLocationAdmin(admin.ModelAdmin):
-    list_display = ["user", "latitude", "longitude", "updated_at"]
-    search_fields = ["user__username"]
-    readonly_fields = ["updated_at"]
 
 
 @admin.register(PsychologicalProfile)
