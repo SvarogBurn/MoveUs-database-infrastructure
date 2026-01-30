@@ -15,13 +15,14 @@ RUN apt-get update \
         postgresql-client \
         curl \
     && apt-get clean \
+    && apt-get install -y gcc libpq-dev graphviz graphviz-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Set GDAL environment variables
 ENV CPLUS_INCLUDE_PATH=/usr/include/gdal
 ENV C_INCLUDE_PATH=/usr/include/gdal
 
-# Install Python dependencies
+# Install Python dependencies (ADDED whitenoise)
 RUN pip install --no-cache-dir \
     Django>=4.2 \
     psycopg2-binary>=2.9 \
@@ -30,6 +31,7 @@ RUN pip install --no-cache-dir \
     pygraphviz \
     djangorestframework>=3.14 \
     django-cors-headers \
+    whitenoise \
     gunicorn \
     celery[redis]>=5.3 \
     django-celery-beat \
